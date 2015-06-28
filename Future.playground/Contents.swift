@@ -22,46 +22,110 @@ enum DownloadImageErrorDomain: ErrorType
     case Interrupted
 }
 
+struct Future<T, ErrorType>
+{
+    typealias ResultType = Result<T, ErrorType>
+    typealias Completion = ResultType -> ()
+    typealias AsyncOperation = Completion -> ()
+    
+    private let operation: AsyncOperation
+    
+    init(operation: AsyncOperation)
+    {
+        self.operation = operation
+    }
+    
+    func start(completion: Completion)
+    {
+        self.operation() { result in completion(result) }
+    }
+}
+
+extension Future
+{
+    func map<U>(f: T -> U) -> Future<U, ErrorType>
+    {
+        return Future<U, ErrorType>(operation: { completion in
+            
+            self.start { result in
+                
+                switch result
+                {
+                    case .Success(let value):
+                        completion(Result.Success(f(value)))
+                    case .Error(let error):
+                        completion(Result.Error(error))
+                }
+            }
+        })
+    }
+    
+    func andThen<U>(f: T -> Future<U, ErrorType>) -> Future<U, ErrorType>
+    {
+        return Future<U, ErrorType>(operation: { completion in
+            
+            self.start { firstFutureResult in
+                
+                switch firstFutureResult
+                {
+                    case .Success(let value): f(value).start(completion)
+                    case .Error(let error): completion(Result.Error(error))
+                }
+            }
+        })
+    }
+}
+
 struct User { let avatarURL: NSURL }
 
-func requestUserInfo(userID: String, completion: (Result<User, UserInfoErrorDomain>) -> ())
+func downloadFile(URL: NSURL) -> Future<NSData, UserInfoErrorDomain>
+{
+    return Future() { completion in
+        
+        let result: Result<NSData, UserInfoErrorDomain>
+        
+        // NSData(contentsOfURL: <#T##NSURL#>) not working with given URL in Playground
+        if let data = UIImageJPEGRepresentation(UIImage(named: URL.absoluteString)!, 1.0)
+        {
+            result = Result.Success(data)
+        }
+        else
+        {
+            result = Result.Error(.NetworkRequestFailure(reason: "Time out"))
+        }
+        
+        completion(result)
+    }
+}
+
+func requestUserInfo(userID: String) -> Future<User, UserInfoErrorDomain>
 {
     if (userID == "1234")
     {
-        completion(.Success(User(avatarURL: NSURL(string: "nyan_cat.jpeg")!)))
+        return Future() { (completion) in completion(Result.Success(User(avatarURL: NSURL(string: "nyan_cat.jpeg")!))) }
     }
     else
     {
-        completion(.Error(.UserDoesNotExist))
+        return Future() { (completion) in completion(Result.Error(.UserDoesNotExist)) }
     }
 }
-func downloadImage(URL: NSURL, completion: (Result<UIImage, DownloadImageErrorDomain>) -> ()) { completion(.Success(UIImage(named: URL.absoluteString)!)) }
 
-func loadAvatar(userID: String, completion: (Result<UIImage, ErrorType>) -> ())
+
+func downloadImage(URL: NSURL) -> Future<UIImage, UserInfoErrorDomain>
 {
-    requestUserInfo(userID) { requestUserInfoResult in
-        switch requestUserInfoResult
-        {
-            case .Success(let user):
-                downloadImage(user.avatarURL) { downloadImageResult in
-                    switch downloadImageResult
-                    {
-                        case .Success(let avatar):
-                            completion(.Success(avatar))
-                        
-                        case .Error(let error):
-                            completion(.Error(error))
-                    }
-                }
-            
-            case .Error(let error):
-                completion(.Error(error))
-        }
-    }
+    return downloadFile(URL).map { UIImage(data: $0)! }
+}
+
+
+func loadAvatar(userID: String) -> Future<UIImage, UserInfoErrorDomain>
+{
+    return requestUserInfo(userID)
+        .map { $0.avatarURL }
+        .andThen(downloadImage)
 }
 
 // Success
-loadAvatar("1234") { result in
+loadAvatar("1234").start() { result in
     switch result
     {
         case .Success(let avatar):
@@ -95,7 +159,7 @@ loadAvatar("1234") { result in
 }
 
 // Fail
-loadAvatar("abc") { result in
+loadAvatar("abc").start { result in
     switch result
     {
     case .Success(let avatar):
